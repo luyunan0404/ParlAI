@@ -762,6 +762,12 @@ class ParlaiParser(argparse.ArgumentParser):
             action='store_true',
             help='Enables some debug behavior',
         )
+        parlai.add_argument(
+            '--chinese',
+            dest='is_chinese',
+            action='store_true',
+            help='Whether input is chinese or English',
+        )
         self.add_parlai_data_path(parlai)
 
     def add_distributed_training_args(self):
