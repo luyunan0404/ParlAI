@@ -1,3 +1,10 @@
+**I self-modified this project in order to:**
+1. multi-language available
+2. retrieve the last conversation memory in order to continue conversation
+3. fine-tune it to make it works as inquiry bot and emotional support bot.
+
+-------------------------------------------------------------------------------------------------------------------------------------------------------
+
 <p align="center">
  <img width="70%" src="docs/source/\_static/img/parlai.png" />
 </p>
