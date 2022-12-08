@@ -34,6 +34,7 @@ class InteractiveWorld(DialogPartnerWorld):
         super().__init__(opt, agents, shared)
         self.init_contexts(shared=shared)
         self.turn_cnt = 0
+        self.first_time = True
 
     def init_contexts(self, shared=None):
         """
@@ -57,37 +58,53 @@ class InteractiveWorld(DialogPartnerWorld):
     def parley(self):
         """
         Agent 0 goes first.
+        [In our case, Agent 0 should be bot, Agent 1 should be human. So take out the first message from Agent0]
+        [as the extra message and return it and from the next turn treat as the original case.]
+        [In the original case, which can be seen from the parlai/scripts/interactive.py line:89
+        human comes first]
 
         Alternate between the two agents.
         """
-        if self.turn_cnt == 0:
-            self.p1, self.p2 = self.get_contexts()
 
-        acts = self.acts
-        agents = self.agents
-        if self.turn_cnt == 0 and self.p1 != '':
-            # add the context on to the first message to agent 0
-            context_act = Message(
-                {'id': 'context', 'text': self.p1, 'episode_done': False}
+        acts = self.acts # list of two
+        agents = self.agents # list of two agent objects
+
+        if self.first_time:
+            agents[0].observe(
+                {
+                    'id': 'World',
+                    'text': 'Hello! This is Doctor bot to help you with your depression problem. Can you describe your situation?',
+                }
             )
-            agents[0].observe(validate(context_act))
+            self.first_time = False
+            return
+
         try:
-            act = deepcopy(agents[0].act())
+            act = deepcopy(agents[0].act(self.opt.get("is_chinese"))) #opt中的chinese作为local human的input传入
         except StopIteration:
             self.reset()
             self.finalize_episode()
             self.turn_cnt = 0
             return
+
+        if not act:
+            return
+
+        act_text = act.get('text', None)
+
         acts[0] = act
-        if self.turn_cnt == 0 and self.p2 != '':
-            # add the context on to the first message to agent 1
-            context_act = Message(
-                {'id': 'context', 'text': self.p2, 'episode_done': False}
-            )
-            agents[1].observe(validate(context_act))
+
+        if act_text and '[DONE]' in act_text:
+            agents[0].observe(validate(Message({'text': 'Goodbye!', 'episode_done': True})))
+            self.reset()
+            return
+
+        # bot observe the human agent act(dict), the text from human is stored in act[0]["text"]
         agents[1].observe(validate(act))
         acts[1] = agents[1].act()
-        agents[0].observe(validate(acts[1]))
+        print("bot act[1] is {}".format(acts[1]))
+        agents[0].observe(validate(acts[1])) # human agent observe display the output from the bot act
+        # the output from bot is acts[1]["text"]
         self.update_counters()
         self.turn_cnt += 1
 
