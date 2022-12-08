@@ -75,7 +75,15 @@ from tqdm import tqdm
 
 from transformers import pipeline
 from sentence_transformers import SentenceTransformer, util
+
+from parrot import Parrot
+import torch
+import warnings
+
+warnings.filterwarnings("ignore")
+
 import nltk
+
 nltk.download('punkt')
 
 from parrot import Parrot
@@ -119,10 +127,10 @@ class BB3Model(ComboFidModel):
 
     @classmethod
     def build_retriever(
-        cls,
-        opt: Opt,
-        dictionary: DictionaryAgent,
-        retriever_shared: Optional[Dict[str, Any]],
+            cls,
+            opt: Opt,
+            dictionary: DictionaryAgent,
+            retriever_shared: Optional[Dict[str, Any]],
     ) -> Optional[RagRetriever]:
         return bb3_retriever_factory(opt, dictionary, retriever_shared)
 
@@ -192,7 +200,7 @@ class BB3Retriever(ComboFidSearchQuerySearchEngineRetriever):
         self._retriever_type = r_type
 
     def retrieve_and_score(
-        self, query: torch.LongTensor
+            self, query: torch.LongTensor
     ) -> Tuple[List[List[Document]], torch.Tensor]:
         """
         Return the search engine docs if in search mode; otherwise, return memories.
@@ -302,7 +310,7 @@ class BlenderBot3Agent(ModularAgentMixin):
 
     @classmethod
     def add_cmdline_args(
-        cls, parser: ParlaiParser, partial_opt: Optional[Opt] = None
+            cls, parser: ParlaiParser, partial_opt: Optional[Opt] = None
     ) -> ParlaiParser:
         """
         Command line args for BB3.
@@ -348,7 +356,7 @@ class BlenderBot3Agent(ModularAgentMixin):
                     type=bool,
                     default=False,
                     help=f'Used in conjunction with --include-knowledge-in-{tag}-context-blocking. '
-                    f'If specified, only block on the knowledge, and not the concatenation.',
+                         f'If specified, only block on the knowledge, and not the concatenation.',
                 )
         group.add_argument(
             '--memory-decision-do-access-reply',
@@ -368,9 +376,9 @@ class BlenderBot3Agent(ModularAgentMixin):
             choices=['combined', 'separate', 'both'],
             default='combined',
             help='Specify the way in which the model uses knowledge.\n'
-            'combined: condition on all knowledge simultaneously'
-            'separate: condition on all knowledge separately, re-ranke later'
-            'both: do both combined and separate and re-rank final beam',
+                 'combined: condition on all knowledge simultaneously'
+                 'separate: condition on all knowledge separately, re-ranke later'
+                 'both: do both combined and separate and re-rank final beam',
         )
         # Copied from Seeker
         group.add_argument(
@@ -501,7 +509,7 @@ class BlenderBot3Agent(ModularAgentMixin):
             if m.is_one_turn_history():
                 try:
                     assert (
-                        self.agents[m].history.size == 1
+                            self.agents[m].history.size == 1
                     ), f"wrong history size! set --{m.tag()}-history-size 1"
                 except AttributeError:
                     pass
@@ -667,10 +675,10 @@ class BlenderBot3Agent(ModularAgentMixin):
         )
 
     def _get_subagent_opt(
-        self,
-        filename: str,
-        specific_override_args: Dict[str, Any],
-        general_override_args: Dict[str, Any],
+            self,
+            filename: str,
+            specific_override_args: Dict[str, Any],
+            general_override_args: Dict[str, Any],
     ) -> Opt:
         """
         Return the specific subagent opt parameters.
@@ -781,10 +789,10 @@ class BlenderBot3Agent(ModularAgentMixin):
         return observations
 
     def batch_act_decision(
-        self,
-        observations: List[Dict[Union[str, Module], Message]],
-        module: Module,
-        agent: Agent,
+            self,
+            observations: List[Dict[Union[str, Module], Message]],
+            module: Module,
+            agent: Agent,
     ) -> Tuple[List[Message], List[int]]:
         """
         Decision agent batch act.
@@ -832,10 +840,10 @@ class BlenderBot3Agent(ModularAgentMixin):
         return batch_reply, indices
 
     def batch_act_sgm(
-        self,
-        observations: List[Dict[Union[str, Module], Message]],
-        search_indices: List[int],
-        agent: Agent,
+            self,
+            observations: List[Dict[Union[str, Module], Message]],
+            search_indices: List[int],
+            agent: Agent,
     ) -> List[Message]:
         """
         Search Query Generator batch act.
@@ -860,10 +868,10 @@ class BlenderBot3Agent(ModularAgentMixin):
         )
 
     def batch_act_mgm(
-        self,
-        observations: Optional[List[Dict[Union[str, Module], Message]]] = None,
-        self_messages: Optional[List[Message]] = None,
-        agent: Optional[Agent] = None,
+            self,
+            observations: Optional[List[Dict[Union[str, Module], Message]]] = None,
+            self_messages: Optional[List[Message]] = None,
+            agent: Optional[Agent] = None,
     ) -> List[Message]:
         """
         Memory Generator batch act.
@@ -908,14 +916,14 @@ class BlenderBot3Agent(ModularAgentMixin):
         return batch_reply_mgm
 
     def batch_act_knowledge(
-        self,
-        observations: List[Dict[Union[str, Module], Message]],
-        search_indices: List[int],
-        memory_indices: List[int],
-        contextual_indices: List[int],
-        batch_agents: Dict[Module, Agent],
-        top_docs: Optional[List[List[Document]]] = None,
-        top_memories: Optional[List[List[str]]] = None,
+            self,
+            observations: List[Dict[Union[str, Module], Message]],
+            search_indices: List[int],
+            memory_indices: List[int],
+            contextual_indices: List[int],
+            batch_agents: Dict[Module, Agent],
+            top_docs: Optional[List[List[Document]]] = None,
+            top_memories: Optional[List[List[str]]] = None,
     ) -> List[Message]:
         """
         Batch act with Knowledge Models.
@@ -996,9 +1004,9 @@ class BlenderBot3Agent(ModularAgentMixin):
         return batch_reply_knowledge
 
     def batch_act_dialogue_combined(
-        self,
-        observations: List[Dict[Union[str, Module], Message]],
-        batch_reply_knowledge: List[Message],
+            self,
+            observations: List[Dict[Union[str, Module], Message]],
+            batch_reply_knowledge: List[Message],
     ) -> List[Message]:
         """
         Dialogue batch act.
@@ -1023,7 +1031,7 @@ class BlenderBot3Agent(ModularAgentMixin):
         agent = self.agents[Module.SEARCH_DIALOGUE]
         dialogue_agent_observations = []
         for i, (obs, knowledge_obs) in enumerate(
-            zip(observations, batch_reply_knowledge)
+                zip(observations, batch_reply_knowledge)
         ):
             temp_history = '\n'
             srm_obs = copy.deepcopy(obs['raw'])
@@ -1051,12 +1059,12 @@ class BlenderBot3Agent(ModularAgentMixin):
         return batch_reply_srm
 
     def batch_act_dialogue_separate(
-        self,
-        observations: List[Dict[Union[Module, str], Message]],
-        batch_reply_knowledge: List[Message],
-        search_indices: List[int],
-        memory_indices: List[int],
-        contextual_indices: List[int],
+            self,
+            observations: List[Dict[Union[Module, str], Message]],
+            batch_reply_knowledge: List[Message],
+            search_indices: List[int],
+            memory_indices: List[int],
+            contextual_indices: List[int],
     ) -> List[Message]:
         """
         Dialogue batch act.
@@ -1097,7 +1105,7 @@ class BlenderBot3Agent(ModularAgentMixin):
 
         # First, we generate the observations given the knowledge outputs.
         for i, (obs, knowledge_obs) in enumerate(
-            zip(observations, batch_reply_knowledge)
+                zip(observations, batch_reply_knowledge)
         ):
             dialogue_obs = copy.deepcopy(obs['raw'])
             dialogue_obs.force_set('skip_retrieval', True)
@@ -1193,11 +1201,11 @@ class BlenderBot3Agent(ModularAgentMixin):
         for reply in batch_reply_dialogue:
             options, scores = [], []
             for i, m in enumerate(
-                [
-                    Module.SEARCH_DIALOGUE,
-                    Module.MEMORY_DIALOGUE,
-                    Module.CONTEXTUAL_DIALOGUE,
-                ]
+                    [
+                        Module.SEARCH_DIALOGUE,
+                        Module.MEMORY_DIALOGUE,
+                        Module.CONTEXTUAL_DIALOGUE,
+                    ]
             ):
                 options.append(reply.get(m.message_name(), ''))
                 scores.append(
@@ -1210,15 +1218,15 @@ class BlenderBot3Agent(ModularAgentMixin):
         return batch_reply_dialogue
 
     def collate_batch_acts(
-        self,
-        batch_reply_sdm: List[Message],
-        batch_reply_mdm: List[Message],
-        batch_reply_sgm: List[Message],
-        batch_reply_mgm_self: List[Message],
-        batch_reply_mgm_partner: List[Message],
-        batch_reply_knowledge: List[Message],
-        batch_reply_dialogue: List[Message],
-        available_memory: List[List[str]],
+            self,
+            batch_reply_sdm: List[Message],
+            batch_reply_mdm: List[Message],
+            batch_reply_sgm: List[Message],
+            batch_reply_mgm_self: List[Message],
+            batch_reply_mgm_partner: List[Message],
+            batch_reply_knowledge: List[Message],
+            batch_reply_dialogue: List[Message],
+            available_memory: List[List[str]],
     ) -> List[Message]:
         """
         Collate all of the batch acts from the various modules.
@@ -1233,14 +1241,14 @@ class BlenderBot3Agent(ModularAgentMixin):
         """
         final_batch_reply = []
         for sdm, mdm, sgm, mgm_self, mgm_partner, km, srm, mems in zip(
-            batch_reply_sdm,
-            batch_reply_mdm,
-            batch_reply_sgm,
-            batch_reply_mgm_self,
-            batch_reply_mgm_partner,
-            batch_reply_knowledge,
-            batch_reply_dialogue,
-            available_memory,
+                batch_reply_sdm,
+                batch_reply_mdm,
+                batch_reply_sgm,
+                batch_reply_mgm_self,
+                batch_reply_mgm_partner,
+                batch_reply_knowledge,
+                batch_reply_dialogue,
+                available_memory,
         ):
             if srm.is_padding():
                 continue
@@ -1264,9 +1272,9 @@ class BlenderBot3Agent(ModularAgentMixin):
             )
             reply.force_set('memories', mems)
             if MemoryUtils.is_valid_memory(
-                reply['memories'],
-                mgm_self.get('text', ''),
-                MemoryUtils.get_memory_prefix('self', self.MODEL_TYPE),
+                    reply['memories'],
+                    mgm_self.get('text', ''),
+                    MemoryUtils.get_memory_prefix('self', self.MODEL_TYPE),
             ):
                 reply.force_set(
                     'memories',
@@ -1278,9 +1286,9 @@ class BlenderBot3Agent(ModularAgentMixin):
                     ],
                 )
             if MemoryUtils.is_valid_memory(
-                reply['memories'],
-                mgm_partner.get('text', ''),
-                MemoryUtils.get_memory_prefix('partner', self.MODEL_TYPE),
+                    reply['memories'],
+                    mgm_partner.get('text', ''),
+                    MemoryUtils.get_memory_prefix('partner', self.MODEL_TYPE),
             ):
                 reply.force_set(
                     'memories',
@@ -1343,7 +1351,7 @@ class BlenderBot3Agent(ModularAgentMixin):
         return final_batch_reply
 
     def batch_act(
-        self, observations: List[Dict[Union[str, Module], Message]]
+            self, observations: List[Dict[Union[str, Module], Message]]
     ) -> List[Message]:
         """
         Full batch_act pipeline.
@@ -1531,11 +1539,11 @@ class BlenderBot3Agent(ModularAgentMixin):
         )
         for person in ['self', 'partner']:
             if MemoryUtils.is_valid_memory(
-                self.memories,
-                self_message.get(
-                    f'{Module.MEMORY_GENERATOR.message_name()}_{person}', ''
-                ),
-                MemoryUtils.get_memory_prefix(person, self.MODEL_TYPE),
+                    self.memories,
+                    self_message.get(
+                        f'{Module.MEMORY_GENERATOR.message_name()}_{person}', ''
+                    ),
+                    MemoryUtils.get_memory_prefix(person, self.MODEL_TYPE),
             ):
                 memory_to_add = MemoryUtils.add_memory_prefix(
                     self_message[f'{Module.MEMORY_GENERATOR.message_name()}_{person}'],
@@ -1555,6 +1563,19 @@ class BlenderBot3Agent(ModularAgentMixin):
                     file.write("\n")
                 file.close()
 
+        '''
+        count=1
+        print("memories: \n")
+        for m in self.memories:
+            print(str(count)+". "+m)
+            count=count+1
+
+        count=1
+        print("in_session_memories: \n")
+        for m in self.in_session_memories:
+            print(str(count)+". "+m)
+            count=count+1
+        '''
         observation = {
             'text': clean_text(
                 self.agents[Module.SEARCH_KNOWLEDGE].history.get_history_str() or ''
@@ -1572,6 +1593,8 @@ class BlenderBot3Agent(ModularAgentMixin):
                 agent.history.update_history(
                     observation, temp_history=agent.get_temp_history(observation)
                 )
+            ##print("self history: \n"+str(self.history.get_history_str()))
+            ##print("\nself_message: "+str(self_message))
 
     ##### new added code
 
