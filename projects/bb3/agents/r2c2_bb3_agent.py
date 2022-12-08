@@ -19,6 +19,8 @@ SRM: Search Dialogue Response Model
 """
 from collections import defaultdict
 import copy
+from os import lseek
+import os
 import torch
 from types import MethodType
 from typing import List, Tuple, Optional, Dict, Any, Union
@@ -55,15 +57,50 @@ from projects.seeker.utils import (
 )
 from projects.seeker.agents.modular_agent import ModularAgentMixin
 
-
 import projects.bb3.constants as CONST
 from projects.bb3.agents.module import Module
 import projects.bb3.tasks.mutators  # noqa: F401
 from projects.bb3.agents.utils import clean_text, Decision, MemoryUtils
 
+import random
+
+from functools import partial
+from math import ceil, sqrt
+from multiprocessing import Pool
+from time import time
+
+from tqdm import tqdm
+
+##new added code
+
+from transformers import pipeline
+from sentence_transformers import SentenceTransformer, util
+
+import nltk
+
+nltk.download('punkt')
+
+from parrot import Parrot
+import torch
+import warnings
+
+warnings.filterwarnings("ignore")
+
+'''
+##to get reproducable paraphrase generations
+def random_state(seed):
+  torch.manual_seed(seed)
+  if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(seed)
+
+random_state(1234)
+'''
+# Init models (make sure you init ONLY once if you integrate this to your code)
+parrot = Parrot(model_tag="prithivida/parrot_paraphraser_on_T5")
+
 
 def bb3_retriever_factory(
-    opt: Opt, dictionary: DictionaryAgent, shared=None
+        opt: Opt, dictionary: DictionaryAgent, shared=None
 ) -> Optional[RagRetriever]:
     """
     Build a BB3 retriever, which can handle both memories and search.
@@ -84,10 +121,10 @@ class BB3Model(ComboFidModel):
 
     @classmethod
     def build_retriever(
-        cls,
-        opt: Opt,
-        dictionary: DictionaryAgent,
-        retriever_shared: Optional[Dict[str, Any]],
+            cls,
+            opt: Opt,
+            dictionary: DictionaryAgent,
+            retriever_shared: Optional[Dict[str, Any]],
     ) -> Optional[RagRetriever]:
         return bb3_retriever_factory(opt, dictionary, retriever_shared)
 
@@ -157,7 +194,7 @@ class BB3Retriever(ComboFidSearchQuerySearchEngineRetriever):
         self._retriever_type = r_type
 
     def retrieve_and_score(
-        self, query: torch.LongTensor
+            self, query: torch.LongTensor
     ) -> Tuple[List[List[Document]], torch.Tensor]:
         """
         Return the search engine docs if in search mode; otherwise, return memories.
@@ -267,7 +304,7 @@ class BlenderBot3Agent(ModularAgentMixin):
 
     @classmethod
     def add_cmdline_args(
-        cls, parser: ParlaiParser, partial_opt: Optional[Opt] = None
+            cls, parser: ParlaiParser, partial_opt: Optional[Opt] = None
     ) -> ParlaiParser:
         """
         Command line args for BB3.
@@ -313,7 +350,7 @@ class BlenderBot3Agent(ModularAgentMixin):
                     type=bool,
                     default=False,
                     help=f'Used in conjunction with --include-knowledge-in-{tag}-context-blocking. '
-                    f'If specified, only block on the knowledge, and not the concatenation.',
+                         f'If specified, only block on the knowledge, and not the concatenation.',
                 )
         group.add_argument(
             '--memory-decision-do-access-reply',
@@ -333,9 +370,9 @@ class BlenderBot3Agent(ModularAgentMixin):
             choices=['combined', 'separate', 'both'],
             default='combined',
             help='Specify the way in which the model uses knowledge.\n'
-            'combined: condition on all knowledge simultaneously'
-            'separate: condition on all knowledge separately, re-ranke later'
-            'both: do both combined and separate and re-rank final beam',
+                 'combined: condition on all knowledge simultaneously'
+                 'separate: condition on all knowledge separately, re-ranke later'
+                 'both: do both combined and separate and re-rank final beam',
         )
         # Copied from Seeker
         group.add_argument(
@@ -437,6 +474,12 @@ class BlenderBot3Agent(ModularAgentMixin):
         self.inject_query_string = opt.get('inject_query_string', '')
         self.knowledge_conditioning = opt['knowledge_conditioning']
 
+        ## new added code
+        self.further_question_asked = ""
+        self.question_asked = ""
+        self.dia_count = -1
+        ## new added code
+
         for m in Module:
             agent = self._init_shared_model(m)
             self.agents[m.agent_name()], self.agents[m] = agent, agent
@@ -460,12 +503,49 @@ class BlenderBot3Agent(ModularAgentMixin):
             if m.is_one_turn_history():
                 try:
                     assert (
-                        self.agents[m].history.size == 1
+                            self.agents[m].history.size == 1
                     ), f"wrong history size! set --{m.tag()}-history-size 1"
                 except AttributeError:
                     pass
 
         super().__init__(opt, shared)
+
+        #### new added code: load questions list ######
+        '''
+        persona_file_path='/home/beidai/Documents/user_persona.txt'
+        num_samples=20 ##adjust this value from 20, 50, 100 to test for performance
+        file_p=open(persona_file_path,'r')
+        random.seed() ##import at the top
+        list=file_p.read().splitlines()
+        l=random.choices(list,k=num_samples)
+        for p in l:
+            ##print("add persona memories: "+p)
+            p.replace("your persona: ","partner's persona: ")
+            self.memories.append(p)
+            self.in_session_memories.add(p)
+        '''
+        #### load persona ######
+        dir_path = os.path.dirname(os.path.realpath(__file__))
+        question_file_path = os.path.join(dir_path, 'documents', 'phq-9_research_persona_2.txt')
+        file_q = open(question_file_path, 'r')
+        list = file_q.read().splitlines()
+        for q in list:
+            self.memories.append(q)
+        memory_file = self.opt.get("memory_file")
+        if memory_file:
+            import json
+            with open(memory_file) as f:
+                output = f.read()
+                dictionary = json.loads(output)
+                for item in dictionary.get("dialog"):
+                    for conv in item:
+                        text = conv.get("text")
+                        person = conv.get("id")
+                        if person == "localHuman":
+                            text = "partner's persona: " + text
+                        else:
+                            text = "your persona: " + text
+                        self.memories.append(text)
 
     def _init_top_agent(self, opt: Opt) -> Agent:
         """
@@ -589,10 +669,10 @@ class BlenderBot3Agent(ModularAgentMixin):
         )
 
     def _get_subagent_opt(
-        self,
-        filename: str,
-        specific_override_args: Dict[str, Any],
-        general_override_args: Dict[str, Any],
+            self,
+            filename: str,
+            specific_override_args: Dict[str, Any],
+            general_override_args: Dict[str, Any],
     ) -> Opt:
         """
         Return the specific subagent opt parameters.
@@ -703,10 +783,10 @@ class BlenderBot3Agent(ModularAgentMixin):
         return observations
 
     def batch_act_decision(
-        self,
-        observations: List[Dict[Union[str, Module], Message]],
-        module: Module,
-        agent: Agent,
+            self,
+            observations: List[Dict[Union[str, Module], Message]],
+            module: Module,
+            agent: Agent,
     ) -> Tuple[List[Message], List[int]]:
         """
         Decision agent batch act.
@@ -754,10 +834,10 @@ class BlenderBot3Agent(ModularAgentMixin):
         return batch_reply, indices
 
     def batch_act_sgm(
-        self,
-        observations: List[Dict[Union[str, Module], Message]],
-        search_indices: List[int],
-        agent: Agent,
+            self,
+            observations: List[Dict[Union[str, Module], Message]],
+            search_indices: List[int],
+            agent: Agent,
     ) -> List[Message]:
         """
         Search Query Generator batch act.
@@ -782,10 +862,10 @@ class BlenderBot3Agent(ModularAgentMixin):
         )
 
     def batch_act_mgm(
-        self,
-        observations: Optional[List[Dict[Union[str, Module], Message]]] = None,
-        self_messages: Optional[List[Message]] = None,
-        agent: Optional[Agent] = None,
+            self,
+            observations: Optional[List[Dict[Union[str, Module], Message]]] = None,
+            self_messages: Optional[List[Message]] = None,
+            agent: Optional[Agent] = None,
     ) -> List[Message]:
         """
         Memory Generator batch act.
@@ -830,14 +910,14 @@ class BlenderBot3Agent(ModularAgentMixin):
         return batch_reply_mgm
 
     def batch_act_knowledge(
-        self,
-        observations: List[Dict[Union[str, Module], Message]],
-        search_indices: List[int],
-        memory_indices: List[int],
-        contextual_indices: List[int],
-        batch_agents: Dict[Module, Agent],
-        top_docs: Optional[List[List[Document]]] = None,
-        top_memories: Optional[List[List[str]]] = None,
+            self,
+            observations: List[Dict[Union[str, Module], Message]],
+            search_indices: List[int],
+            memory_indices: List[int],
+            contextual_indices: List[int],
+            batch_agents: Dict[Module, Agent],
+            top_docs: Optional[List[List[Document]]] = None,
+            top_memories: Optional[List[List[str]]] = None,
     ) -> List[Message]:
         """
         Batch act with Knowledge Models.
@@ -918,9 +998,9 @@ class BlenderBot3Agent(ModularAgentMixin):
         return batch_reply_knowledge
 
     def batch_act_dialogue_combined(
-        self,
-        observations: List[Dict[Union[str, Module], Message]],
-        batch_reply_knowledge: List[Message],
+            self,
+            observations: List[Dict[Union[str, Module], Message]],
+            batch_reply_knowledge: List[Message],
     ) -> List[Message]:
         """
         Dialogue batch act.
@@ -945,7 +1025,7 @@ class BlenderBot3Agent(ModularAgentMixin):
         agent = self.agents[Module.SEARCH_DIALOGUE]
         dialogue_agent_observations = []
         for i, (obs, knowledge_obs) in enumerate(
-            zip(observations, batch_reply_knowledge)
+                zip(observations, batch_reply_knowledge)
         ):
             temp_history = '\n'
             srm_obs = copy.deepcopy(obs['raw'])
@@ -973,12 +1053,12 @@ class BlenderBot3Agent(ModularAgentMixin):
         return batch_reply_srm
 
     def batch_act_dialogue_separate(
-        self,
-        observations: List[Dict[Union[Module, str], Message]],
-        batch_reply_knowledge: List[Message],
-        search_indices: List[int],
-        memory_indices: List[int],
-        contextual_indices: List[int],
+            self,
+            observations: List[Dict[Union[Module, str], Message]],
+            batch_reply_knowledge: List[Message],
+            search_indices: List[int],
+            memory_indices: List[int],
+            contextual_indices: List[int],
     ) -> List[Message]:
         """
         Dialogue batch act.
@@ -1019,7 +1099,7 @@ class BlenderBot3Agent(ModularAgentMixin):
 
         # First, we generate the observations given the knowledge outputs.
         for i, (obs, knowledge_obs) in enumerate(
-            zip(observations, batch_reply_knowledge)
+                zip(observations, batch_reply_knowledge)
         ):
             dialogue_obs = copy.deepcopy(obs['raw'])
             dialogue_obs.force_set('skip_retrieval', True)
@@ -1115,11 +1195,11 @@ class BlenderBot3Agent(ModularAgentMixin):
         for reply in batch_reply_dialogue:
             options, scores = [], []
             for i, m in enumerate(
-                [
-                    Module.SEARCH_DIALOGUE,
-                    Module.MEMORY_DIALOGUE,
-                    Module.CONTEXTUAL_DIALOGUE,
-                ]
+                    [
+                        Module.SEARCH_DIALOGUE,
+                        Module.MEMORY_DIALOGUE,
+                        Module.CONTEXTUAL_DIALOGUE,
+                    ]
             ):
                 options.append(reply.get(m.message_name(), ''))
                 scores.append(
@@ -1132,15 +1212,15 @@ class BlenderBot3Agent(ModularAgentMixin):
         return batch_reply_dialogue
 
     def collate_batch_acts(
-        self,
-        batch_reply_sdm: List[Message],
-        batch_reply_mdm: List[Message],
-        batch_reply_sgm: List[Message],
-        batch_reply_mgm_self: List[Message],
-        batch_reply_mgm_partner: List[Message],
-        batch_reply_knowledge: List[Message],
-        batch_reply_dialogue: List[Message],
-        available_memory: List[List[str]],
+            self,
+            batch_reply_sdm: List[Message],
+            batch_reply_mdm: List[Message],
+            batch_reply_sgm: List[Message],
+            batch_reply_mgm_self: List[Message],
+            batch_reply_mgm_partner: List[Message],
+            batch_reply_knowledge: List[Message],
+            batch_reply_dialogue: List[Message],
+            available_memory: List[List[str]],
     ) -> List[Message]:
         """
         Collate all of the batch acts from the various modules.
@@ -1155,14 +1235,14 @@ class BlenderBot3Agent(ModularAgentMixin):
         """
         final_batch_reply = []
         for sdm, mdm, sgm, mgm_self, mgm_partner, km, srm, mems in zip(
-            batch_reply_sdm,
-            batch_reply_mdm,
-            batch_reply_sgm,
-            batch_reply_mgm_self,
-            batch_reply_mgm_partner,
-            batch_reply_knowledge,
-            batch_reply_dialogue,
-            available_memory,
+                batch_reply_sdm,
+                batch_reply_mdm,
+                batch_reply_sgm,
+                batch_reply_mgm_self,
+                batch_reply_mgm_partner,
+                batch_reply_knowledge,
+                batch_reply_dialogue,
+                available_memory,
         ):
             if srm.is_padding():
                 continue
@@ -1186,9 +1266,9 @@ class BlenderBot3Agent(ModularAgentMixin):
             )
             reply.force_set('memories', mems)
             if MemoryUtils.is_valid_memory(
-                reply['memories'],
-                mgm_self.get('text', ''),
-                MemoryUtils.get_memory_prefix('self', self.MODEL_TYPE),
+                    reply['memories'],
+                    mgm_self.get('text', ''),
+                    MemoryUtils.get_memory_prefix('self', self.MODEL_TYPE),
             ):
                 reply.force_set(
                     'memories',
@@ -1200,9 +1280,9 @@ class BlenderBot3Agent(ModularAgentMixin):
                     ],
                 )
             if MemoryUtils.is_valid_memory(
-                reply['memories'],
-                mgm_partner.get('text', ''),
-                MemoryUtils.get_memory_prefix('partner', self.MODEL_TYPE),
+                    reply['memories'],
+                    mgm_partner.get('text', ''),
+                    MemoryUtils.get_memory_prefix('partner', self.MODEL_TYPE),
             ):
                 reply.force_set(
                     'memories',
@@ -1265,7 +1345,7 @@ class BlenderBot3Agent(ModularAgentMixin):
         return final_batch_reply
 
     def batch_act(
-        self, observations: List[Dict[Union[str, Module], Message]]
+            self, observations: List[Dict[Union[str, Module], Message]]
     ) -> List[Message]:
         """
         Full batch_act pipeline.
@@ -1382,6 +1462,56 @@ class BlenderBot3Agent(ModularAgentMixin):
         Call batch_act with the singleton batch.
         """
         response = self.batch_act([self.observations])[0]
+        '''
+        for key in response:
+            print("[ "+key+" ]: "+str(response.get(key))+"\n")
+        '''
+        ## new added code
+        print("self.question_asked: (" + self.question_asked + ")\n")
+        print("self.further_question: (" + self.further_question_asked + ")\n")
+        phq_question_index = -1
+        if self.dia_count == -1:
+            phq_question_index = self.question_asked_check(response)
+            if self.question_asked != "":
+                self.dia_count += 1
+        if self.dia_count == 0:
+            ##question asked
+            self.dia_count += 1
+        elif self.dia_count == 1:
+            ## check for yes/no anwser
+            ## if anwsered, check for yes/no (admit/deny), (unfinished)
+            # if yes, prepare to ask further frequency question
+            # if no, recored the anwser, delete the memory
+            # if not answered
+            if self.check_anwser(response, phq_question_index) == 1:
+                ## answer yes
+                response.force_set('text', self.further_question_asked)
+                self.dia_count += 1
+            '''
+            elif self.check_anwser(response,phq_question_index)==0:
+                ## answer no
+                ## record anwser
+                ## delete the corresponding memory
+                ## reset all the constants
+            elif self.check_anwser(response,phq_question_index)==-1:
+                ## unrelated anwser
+                ## 1. try to paraphrase the question to ask again
+                ## 2. ignore and continue to chat, until the bot raise a new question
+            '''
+        elif self.dia_count == 2:
+            ## check for frequency anwser (unfinished)
+            ## if answered, delete the corresponding memory for that question
+            ## and record the anwser to calculate phq score
+            ## if not answered:
+            ## 1. try to paraphrase the question to ask again
+            ## 2. ignore and continue to chat, until the bot raise a new question
+            anwsered = True
+            if anwsered:
+                self.question_asked = ""
+                self.further_question = ""
+                self.dia_count = -1
+                phq_question_index = -1
+                ##self.delete_corresponding_memory(response)
         self.self_observe(response)
         return response
 
@@ -1403,11 +1533,11 @@ class BlenderBot3Agent(ModularAgentMixin):
         )
         for person in ['self', 'partner']:
             if MemoryUtils.is_valid_memory(
-                self.memories,
-                self_message.get(
-                    f'{Module.MEMORY_GENERATOR.message_name()}_{person}', ''
-                ),
-                MemoryUtils.get_memory_prefix(person, self.MODEL_TYPE),
+                    self.memories,
+                    self_message.get(
+                        f'{Module.MEMORY_GENERATOR.message_name()}_{person}', ''
+                    ),
+                    MemoryUtils.get_memory_prefix(person, self.MODEL_TYPE),
             ):
                 memory_to_add = MemoryUtils.add_memory_prefix(
                     self_message[f'{Module.MEMORY_GENERATOR.message_name()}_{person}'],
@@ -1417,6 +1547,29 @@ class BlenderBot3Agent(ModularAgentMixin):
 
                 self.memories.append(memory_to_add)
                 self.in_session_memories.add(memory_to_add)
+
+                ## new added code
+                dir_path = os.path.dirname(os.path.realpath(__file__))
+                user_persona_path = os.path.join(dir_path, 'documents', 'User_persona.txt')
+                file = open(user_persona_path, 'a')
+                if memory_to_add.startswith("partner's persona: "):
+                    file.write(memory_to_add)
+                    file.write("\n")
+                file.close()
+
+        '''
+        count=1
+        print("memories: \n")
+        for m in self.memories:
+            print(str(count)+". "+m)
+            count=count+1
+
+        count=1
+        print("in_session_memories: \n")
+        for m in self.in_session_memories:
+            print(str(count)+". "+m)
+            count=count+1
+        '''
         observation = {
             'text': clean_text(
                 self.agents[Module.SEARCH_KNOWLEDGE].history.get_history_str() or ''
@@ -1434,3 +1587,105 @@ class BlenderBot3Agent(ModularAgentMixin):
                 agent.history.update_history(
                     observation, temp_history=agent.get_temp_history(observation)
                 )
+            ##print("self history: \n"+str(self.history.get_history_str()))
+            ##print("\nself_message: "+str(self_message))
+
+    ##### new added code
+
+    def parrot_paraphrase(sent):
+        para_phrases = parrot.augment(input_phrase=sent, use_gpu=False)
+        if isinstance(para_phrases, None):
+            print("No paraphrase available\n")
+            return sent
+        random.seed()
+        para_phrase = random.choice(para_phrases)
+        return para_phrase
+
+    def question_asked_check(self, self_message: Message):
+        model = SentenceTransformer('all-MiniLM-L6-v2')
+        last_response = self_message.get('text')
+        print("last response: " + last_response + "\n")
+        questions = []
+        dir_path = os.path.dirname(os.path.realpath(__file__))
+        question_file_path = os.path.join(dir_path, 'documents', 'phq_questions.txt')
+        question_file = open(question_file_path, 'r')
+        questions = question_file.read().splitlines()
+        distances = []
+        max_dis = 0
+        max_dis_idx = 0
+        index_count = 0
+        last_response = (nltk.sent_tokenize(last_response))
+        last_response.append(self_message.get('text'))
+        for i in range(0, len(questions), 5):
+            distances.append(0)
+            for res in last_response:
+                res_doc = []
+                match_doc = []
+                res_doc.append(res)
+                match_doc.append(questions[i])
+                emb_last_response = model.encode(res_doc, convert_to_tensor=True)
+                emb_question = model.encode(match_doc, convert_to_tensor=True)
+                ##distances.append(wmd_similarity.wmd_sim('en',res_doc,match_doc))
+                cosine_similarity = util.cos_sim(emb_last_response, emb_question)
+                if cosine_similarity > distances[index_count]:
+                    distances[index_count] = cosine_similarity[0][0]
+                if distances[index_count] > max_dis:
+                    max_dis = distances[index_count]
+                    max_dis_idx = index_count
+                    max_question = questions[i]
+                    ##print("current max score : "+ str(max_dis)+ "at index: "+str(max_dis_idx)+"\n")
+                ##print("["+res+"] match with: "+questions[i]+"; similarity score: "+str(distances[index_count])+"\n")
+            index_count += 1
+        print("[Max score result: " + max_question + "; with score: " + str(distances[max_dis_idx]) + "]\n")
+        question_asked_standard = 0.8  ##adjust as results from expiriment.
+        if max_dis > question_asked_standard:
+            ##question asked
+            self.question_asked = max_question
+            self.dia_count = 0
+        return max_dis_idx
+
+    def check_anwser(self, self_message: Message, max_dis_idx):
+        last_input = (self.history.get_history_str().splitlines())[-2]
+        classifier = pipeline("text-classification", model="cross-encoder/qnli-electra-base")
+        phq_question_asked = self.question_asked
+        qnli_prediction = classifier(phq_question_asked + "," + last_input)
+        for k in qnli_prediction[0].keys():
+            print("[" + k + "]: " + str(qnli_prediction[0].get(k)) + "\n")
+        entailment_score = qnli_prediction[0].get('score')
+        qualified_anwser_score = 0.5  ## adjust as the result of the evaluation
+        if entailment_score > qualified_anwser_score:
+            ##if questioned asked and properly anwsered, generate further frequency quesiton
+            dir_path = os.path.dirname(os.path.realpath(__file__))
+            further_question_file_path = os.path.join(dir_path, 'documents', 'phq_further_questions.txt')
+            further_question_file = open(further_question_file_path, 'r')
+            further_questions = further_question_file.read().splitlines()
+            further_questions = further_questions[(max_dis_idx * 5):(max_dis_idx * 5 + 5)]
+            random.seed()
+            further_question = random.choice(further_questions)
+            further_question = self.parrot_paraphrase(further_question)
+            self.further_question_asked = further_question
+            print("decided to ask frequency question: " + further_question)
+            return True
+        return False
+
+    def delete_corresponding_memory(self, self_message: Message):
+        model = SentenceTransformer('all-MiniLM-L6-v2')
+        memory_to_delete_index = 0
+        memory_sim = []
+        max_sim = 0
+        for m in self.memories:
+            question_asked = self.question_asked
+            question_asked = (nltk.sent_tokenize(question_asked))
+            for sent in question_asked:
+                sent_doc = []
+                memory_doc = []
+                sent_doc.append(sent)
+                memory_doc.append(m)
+                emb_last_response = model.encode(sent_doc, convert_to_tensor=True)
+                emb_question = model.encode(memory_doc, convert_to_tensor=True)
+                ##distances.append(wmd_similarity.wmd_sim('en',res_doc,match_doc))
+                cosine_similarity = util.cos_sim(emb_last_response, emb_question)
+                memory_sim.append(cosine_similarity[0][0])
+        memory_to_delete_index = memory_sim.index(max(memory_sim))
+        print("[Max score result: " + self.memories[memory_to_delete_index] + "; with score: " + str(
+            memory_sim[memory_to_delete_index]) + "]\n")
