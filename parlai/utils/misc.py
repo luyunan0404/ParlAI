@@ -17,11 +17,12 @@ import re
 import shutil
 import json
 import os
-
+import requests
 from parlai.core.message import Message
 from parlai.utils.strings import colorize
 from parlai.utils.io import PathManager
 import parlai.utils.logging as logging
+from parlai.utils import customize
 
 try:
     import torch
@@ -495,6 +496,8 @@ def display_messages(
     add_fields: str = '',
     max_len: int = 1000,
     verbose: bool = False,
+    is_chinese: bool = False,
+    id_file_path: str = '',
 ) -> Optional[str]:
     """
     Return a string describing the set of messages provided.
@@ -527,6 +530,39 @@ def display_messages(
             indent_space, colorize('[' + field + ']:', 'field'), colorize(value, style)
         )
         return line
+
+    def get_token():
+
+        url = "https://api.alefcloud.cn/api/auth/jwt/apiToken"
+
+        payload = json.dumps({
+            "username": "admin",
+            "password": "admin"
+        })
+        headers = {
+            'Content-Type': 'application/json'
+        }
+
+        response = requests.request("POST", url, headers=headers, data=payload, verify=False)
+        return response
+
+    def translate(token, input_text=None, from_lang="zh-cn", to_lang="en"):
+        url = "https://api.alefcloud.cn/api/translate/getTranslateResultPost"
+
+        payload = {
+            'text': input_text,
+            'fromLang': from_lang,
+            'toLang': to_lang,
+            'model': '0'}
+        headers = {
+            'Authorization': token
+        }
+
+        response = requests.request("POST", url, headers=headers, data=payload, verify=False)
+        return response
+
+    token_response = get_token()
+    token = token_response.json().get("data").get("accessToken")
 
     lines = []
     episode_done = False
@@ -587,6 +623,12 @@ def display_messages(
             value = clip_text(msg['text'], max_len)
             style = 'bold_text' if index == 0 else 'labels'
             field = 'text' if verbose else agent_id
+            if is_chinese:
+                print(value)
+                value = customize.translate_personal(id_file_path, value, from_lang="en", to_lang="zh-cn")
+                translate_response = translate(token, input_text=value, from_lang="en", to_lang="zh-cn")
+                chinese_output = translate_response.json().get("data")
+                value = chinese_output
             line = _pretty_lines(
                 indent_space=space, field=field, value=value, style=style
             )
