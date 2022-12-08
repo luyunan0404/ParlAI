@@ -9,6 +9,8 @@ Agent does gets the local keyboard input in the act() function.
 Example: parlai eval_model -m local_human -t babi:Task1k:1 -dt valid
 """
 
+import json
+import requests
 from typing import Optional
 from parlai.core.params import ParlaiParser
 from parlai.core.opt import Opt
@@ -16,6 +18,7 @@ from parlai.core.agents import Agent
 from parlai.core.message import Message
 from parlai.utils.misc import display_messages, load_cands
 from parlai.utils.strings import colorize
+from parlai.utils import customize
 
 
 class LocalHumanAgent(Agent):
@@ -65,14 +68,57 @@ class LocalHumanAgent(Agent):
                 add_fields=self.opt.get('display_add_fields', ''),
                 prettify=self.opt.get('display_prettify', False),
                 verbose=self.opt.get('verbose', False),
+                is_chinese=self.opt.get("is_chinese"),
+                id_file_path=self.opt.get("id_file_path")
             )
         )
 
-    def act(self):
+    def get_token(self):
+
+        url = "https://api.alefcloud.cn/api/auth/jwt/apiToken"
+
+        payload = json.dumps({
+            "username": "admin",
+            "password": "admin"
+        })
+        headers = {
+            'Content-Type': 'application/json'
+        }
+
+        response = requests.request("POST", url, headers=headers, data=payload, verify=False)
+        return response
+
+    def translate(self, token, input_text=None, from_lang="zh-cn", to_lang="en"):
+        url = "https://api.alefcloud.cn/api/translate/getTranslateResultPost"
+
+        payload = {
+            'text': input_text,
+            'fromLang': from_lang,
+            'toLang': to_lang,
+            'model': '0'}
+        headers = {
+            'Authorization': token
+        }
+
+        response = requests.request("POST", url, headers=headers, data=payload, verify=False)
+        return response
+
+    def act(self, is_chinese=False):
         reply = Message()
         reply['id'] = self.getID()
         try:
-            reply_text = input(colorize("Enter Your Message:", 'text') + ' ')
+            print(is_chinese)
+            if not is_chinese:
+                reply_text = input(colorize("Enter Your Message:", 'text') + ' ')
+            else:
+                chinese_input = input(colorize("Enter Your Message:", 'text') + ' ')
+                id_file_path = self.opt.get("id_file_path")
+                chinese_input = customize.translate_personal(id_file_path, chinese_input, from_lang="zh-cn", to_lang="en")
+                token_response = self.get_token()
+                token = token_response.json().get("data").get("accessToken")
+                translate_response = self.translate(token, input_text=chinese_input)
+                reply_text = translate_response.json().get("data")
+                print(reply_text)
         except EOFError:
             self.finished = True
             return {'episode_done': True}
