@@ -1,0 +1,18 @@
+partner's persona: I have a dog. I walk my dog.
+partner's persona: I have a border collie named beidai.
+partner's persona: I am a college student. I study computer science.
+partner's persona: I go to college. I am a student.
+partner's persona: I have a mid-term essay to write.
+partner's persona: I don't like TV shows. I don't watch TV.
+partner's persona: I play video games. I find video games boring.
+partner's persona: I don't want to do anything. I have a bed.
+partner's persona: I sometimes wake up in the middle of the night.
+partner's persona: I am a student. I have a part-time job.
+partner's persona: I used to play video games and watch anime.
+partner's persona: I have lost interest in doing many things. I am tired.
+partner's persona: I don't want to change my current life.
+partner's persona: I do not feel tired often. I like doing things that I like.
+partner's persona: I like to exercise. I would like to do some exercise.
+partner's persona: I do exercise to help me get rid of stress.
+partner's persona: I am a student. I go to school.
+partner's persona: I can't focus on what I'm doing.

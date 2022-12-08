@@ -19,6 +19,8 @@ SRM: Search Dialogue Response Model
 """
 from collections import defaultdict
 import copy
+from os import lseek
+import os
 import torch
 from types import MethodType
 from typing import List, Tuple, Optional, Dict, Any, Union
@@ -55,15 +57,48 @@ from projects.seeker.utils import (
 )
 from projects.seeker.agents.modular_agent import ModularAgentMixin
 
-
 import projects.bb3.constants as CONST
 from projects.bb3.agents.module import Module
 import projects.bb3.tasks.mutators  # noqa: F401
 from projects.bb3.agents.utils import clean_text, Decision, MemoryUtils
 
+import random
+
+from functools import partial
+from math import ceil, sqrt
+from multiprocessing import Pool
+from time import time
+
+from tqdm import tqdm
+
+##new added code
+
+from transformers import pipeline
+from sentence_transformers import SentenceTransformer, util
+import nltk
+nltk.download('punkt')
+
+from parrot import Parrot
+import torch
+import warnings
+
+warnings.filterwarnings("ignore")
+
+'''
+##to get reproducable paraphrase generations
+def random_state(seed):
+  torch.manual_seed(seed)
+  if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(seed)
+
+random_state(1234)
+'''
+# Init models (make sure you init ONLY once if you integrate this to your code)
+parrot = Parrot(model_tag="prithivida/parrot_paraphraser_on_T5")
+
 
 def bb3_retriever_factory(
-    opt: Opt, dictionary: DictionaryAgent, shared=None
+        opt: Opt, dictionary: DictionaryAgent, shared=None
 ) -> Optional[RagRetriever]:
     """
     Build a BB3 retriever, which can handle both memories and search.
@@ -437,6 +472,12 @@ class BlenderBot3Agent(ModularAgentMixin):
         self.inject_query_string = opt.get('inject_query_string', '')
         self.knowledge_conditioning = opt['knowledge_conditioning']
 
+        ## new added code
+        self.further_question_asked = ""
+        self.question_asked = ""
+        self.dia_count = -1
+        ## new added code
+
         for m in Module:
             agent = self._init_shared_model(m)
             self.agents[m.agent_name()], self.agents[m] = agent, agent
@@ -466,6 +507,43 @@ class BlenderBot3Agent(ModularAgentMixin):
                     pass
 
         super().__init__(opt, shared)
+
+        #### new added code: load questions list ######
+        '''
+        persona_file_path='/home/beidai/Documents/user_persona.txt'
+        num_samples=20 ##adjust this value from 20, 50, 100 to test for performance
+        file_p=open(persona_file_path,'r')
+        random.seed() ##import at the top
+        list=file_p.read().splitlines()
+        l=random.choices(list,k=num_samples)
+        for p in l:
+            ##print("add persona memories: "+p)
+            p.replace("your persona: ","partner's persona: ")
+            self.memories.append(p)
+            self.in_session_memories.add(p)
+        '''
+        #### load persona ######
+        dir_path = os.path.dirname(os.path.realpath(__file__))
+        question_file_path = os.path.join(dir_path, 'documents', 'phq-9_research_persona_2.txt')
+        file_q = open(question_file_path, 'r')
+        list = file_q.read().splitlines()
+        for q in list:
+            self.memories.append(q)
+        memory_file = self.opt.get("memory_file")
+        if memory_file:
+            import json
+            with open(memory_file) as f:
+                output = f.read()
+                dictionary = json.loads(output)
+                for item in dictionary.get("dialog"):
+                    for conv in item:
+                        text = conv.get("text")
+                        person = conv.get("id")
+                        if person == "localHuman":
+                            text = "partner's persona: " + text
+                        else:
+                            text = "your persona: " + text
+                        self.memories.append(text)
 
     def _init_top_agent(self, opt: Opt) -> Agent:
         """
@@ -1382,6 +1460,56 @@ class BlenderBot3Agent(ModularAgentMixin):
         Call batch_act with the singleton batch.
         """
         response = self.batch_act([self.observations])[0]
+        '''
+        for key in response:
+            print("[ "+key+" ]: "+str(response.get(key))+"\n")
+        '''
+        ## new added code
+        print("self.question_asked: (" + self.question_asked + ")\n")
+        print("self.further_question: (" + self.further_question_asked + ")\n")
+        phq_question_index = -1
+        if self.dia_count == -1:
+            phq_question_index = self.question_asked_check(response)
+            if self.question_asked != "":
+                self.dia_count += 1
+        if self.dia_count == 0:
+            ##question asked
+            self.dia_count += 1
+        elif self.dia_count == 1:
+            ## check for yes/no anwser
+            ## if anwsered, check for yes/no (admit/deny), (unfinished)
+            # if yes, prepare to ask further frequency question
+            # if no, recored the anwser, delete the memory
+            # if not answered
+            if self.check_anwser(response, phq_question_index) == 1:
+                ## answer yes
+                response.force_set('text', self.further_question_asked)
+                self.dia_count += 1
+            '''
+            elif self.check_anwser(response,phq_question_index)==0:
+                ## answer no
+                ## record anwser
+                ## delete the corresponding memory
+                ## reset all the constants
+            elif self.check_anwser(response,phq_question_index)==-1:
+                ## unrelated anwser
+                ## 1. try to paraphrase the question to ask again
+                ## 2. ignore and continue to chat, until the bot raise a new question
+            '''
+        elif self.dia_count == 2:
+            ## check for frequency anwser (unfinished)
+            ## if answered, delete the corresponding memory for that question
+            ## and record the anwser to calculate phq score
+            ## if not answered:
+            ## 1. try to paraphrase the question to ask again
+            ## 2. ignore and continue to chat, until the bot raise a new question
+            anwsered = True
+            if anwsered:
+                self.question_asked = ""
+                self.further_question = ""
+                self.dia_count = -1
+                phq_question_index = -1
+                ##self.delete_corresponding_memory(response)
         self.self_observe(response)
         return response
 
@@ -1417,6 +1545,16 @@ class BlenderBot3Agent(ModularAgentMixin):
 
                 self.memories.append(memory_to_add)
                 self.in_session_memories.add(memory_to_add)
+
+                ## new added code
+                dir_path = os.path.dirname(os.path.realpath(__file__))
+                user_persona_path = os.path.join(dir_path, 'documents', 'User_persona.txt')
+                file = open(user_persona_path, 'a')
+                if memory_to_add.startswith("partner's persona: "):
+                    file.write(memory_to_add)
+                    file.write("\n")
+                file.close()
+
         observation = {
             'text': clean_text(
                 self.agents[Module.SEARCH_KNOWLEDGE].history.get_history_str() or ''
@@ -1434,3 +1572,103 @@ class BlenderBot3Agent(ModularAgentMixin):
                 agent.history.update_history(
                     observation, temp_history=agent.get_temp_history(observation)
                 )
+
+    ##### new added code
+
+    def parrot_paraphrase(sent):
+        para_phrases = parrot.augment(input_phrase=sent, use_gpu=False)
+        if isinstance(para_phrases, None):
+            print("No paraphrase available\n")
+            return sent
+        random.seed()
+        para_phrase = random.choice(para_phrases)
+        return para_phrase
+
+    def question_asked_check(self, self_message: Message):
+        model = SentenceTransformer('all-MiniLM-L6-v2')
+        last_response = self_message.get('text')
+        print("last response: " + last_response + "\n")
+        questions = []
+        dir_path = os.path.dirname(os.path.realpath(__file__))
+        question_file_path = os.path.join(dir_path, 'documents', 'phq_questions.txt')
+        question_file = open(question_file_path, 'r')
+        questions = question_file.read().splitlines()
+        distances = []
+        max_dis = 0
+        max_dis_idx = 0
+        index_count = 0
+        last_response = (nltk.sent_tokenize(last_response))
+        last_response.append(self_message.get('text'))
+        for i in range(0, len(questions), 5):
+            distances.append(0)
+            for res in last_response:
+                res_doc = []
+                match_doc = []
+                res_doc.append(res)
+                match_doc.append(questions[i])
+                emb_last_response = model.encode(res_doc, convert_to_tensor=True)
+                emb_question = model.encode(match_doc, convert_to_tensor=True)
+                ##distances.append(wmd_similarity.wmd_sim('en',res_doc,match_doc))
+                cosine_similarity = util.cos_sim(emb_last_response, emb_question)
+                if cosine_similarity > distances[index_count]:
+                    distances[index_count] = cosine_similarity[0][0]
+                if distances[index_count] > max_dis:
+                    max_dis = distances[index_count]
+                    max_dis_idx = index_count
+                    max_question = questions[i]
+                    ##print("current max score : "+ str(max_dis)+ "at index: "+str(max_dis_idx)+"\n")
+                ##print("["+res+"] match with: "+questions[i]+"; similarity score: "+str(distances[index_count])+"\n")
+            index_count += 1
+        print("[Max score result: " + max_question + "; with score: " + str(distances[max_dis_idx]) + "]\n")
+        question_asked_standard = 0.8  ##adjust as results from expiriment.
+        if max_dis > question_asked_standard:
+            ##question asked
+            self.question_asked = max_question
+            self.dia_count = 0
+        return max_dis_idx
+
+    def check_anwser(self, self_message: Message, max_dis_idx):
+        last_input = (self.history.get_history_str().splitlines())[-2]
+        classifier = pipeline("text-classification", model="cross-encoder/qnli-electra-base")
+        phq_question_asked = self.question_asked
+        qnli_prediction = classifier(phq_question_asked + "," + last_input)
+        for k in qnli_prediction[0].keys():
+            print("[" + k + "]: " + str(qnli_prediction[0].get(k)) + "\n")
+        entailment_score = qnli_prediction[0].get('score')
+        qualified_anwser_score = 0.5  ## adjust as the result of the evaluation
+        if entailment_score > qualified_anwser_score:
+            ##if questioned asked and properly anwsered, generate further frequency quesiton
+            dir_path = os.path.dirname(os.path.realpath(__file__))
+            further_question_file_path = os.path.join(dir_path, 'documents', 'phq_further_questions.txt')
+            further_question_file = open(further_question_file_path, 'r')
+            further_questions = further_question_file.read().splitlines()
+            further_questions = further_questions[(max_dis_idx * 5):(max_dis_idx * 5 + 5)]
+            random.seed()
+            further_question = random.choice(further_questions)
+            further_question = self.parrot_paraphrase(further_question)
+            self.further_question_asked = further_question
+            print("decided to ask frequency question: " + further_question)
+            return True
+        return False
+
+    def delete_corresponding_memory(self, self_message: Message):
+        model = SentenceTransformer('all-MiniLM-L6-v2')
+        memory_to_delete_index = 0
+        memory_sim = []
+        max_sim = 0
+        for m in self.memories:
+            question_asked = self.question_asked
+            question_asked = (nltk.sent_tokenize(question_asked))
+            for sent in question_asked:
+                sent_doc = []
+                memory_doc = []
+                sent_doc.append(sent)
+                memory_doc.append(m)
+                emb_last_response = model.encode(sent_doc, convert_to_tensor=True)
+                emb_question = model.encode(memory_doc, convert_to_tensor=True)
+                ##distances.append(wmd_similarity.wmd_sim('en',res_doc,match_doc))
+                cosine_similarity = util.cos_sim(emb_last_response, emb_question)
+                memory_sim.append(cosine_similarity[0][0])
+        memory_to_delete_index = memory_sim.index(max(memory_sim))
+        print("[Max score result: " + self.memories[memory_to_delete_index] + "; with score: " + str(
+            memory_sim[memory_to_delete_index]) + "]\n")
